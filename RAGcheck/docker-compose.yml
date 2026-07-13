@@ -1,0 +1,21 @@
+services:
+  ragcheck:
+    build: .
+    container_name: ragcheck
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      MCP_CHECK_URL: http://knowledge-mcp:6646
+      QDRANT_URL: http://kb-qdrant:6333
+    external_links:
+      - knowledge-mcp
+      - kb-qdrant
+    volumes:
+      - ./reports:/app/reports
+    networks:
+      - knowledge-mcp_default
+
+networks:
+  knowledge-mcp_default:
+    external: true

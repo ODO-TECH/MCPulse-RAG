@@ -1,0 +1,53 @@
+server:
+  host: "0.0.0.0"
+  port: 6646
+
+qdrant:
+  host: ${QDRANT_HOST}
+  port: ${QDRANT_PORT}
+
+models:
+  api_base: ${SILICONFLOW_API_BASE}
+  embed_model: ${EMBED_MODEL}
+  rerank_model: ${RERANK_MODEL}
+
+knowledge:
+  root: ${KB_DATA_DIR}
+
+  bases:
+    - name: progress
+      path: progress
+      collection: kb_progress
+      description: 进步相关材料，包括入党、入团等内容
+
+    - name: wangshi
+      path: wangshi
+      collection: kb_wangshi
+      description: 东方妄世谭相关材料，包括剧本、设定、整合讨论、型月相关等
+
+    - name: study
+      path: study
+      collection: kb_study
+      description: 学习相关材料
+
+    - name: sci
+      path: sci
+      collection: kb_sci
+      description: 科研相关材料
+
+retrieval:
+  similarity_top_k: 12
+  rerank_top_n: 5
+  chunk_size: 800
+  chunk_overlap: 150
+
+watcher:
+  debounce_seconds: 30
+
+files:
+  include_extensions:
+    - .md
+    - .txt
+    - .pdf
+    - .docx
+    - .doc
