@@ -26,7 +26,7 @@ services:
       MCP_HOST: "0.0.0.0"
       MCP_PORT: "6646"
     volumes:
-      - /vol3/1000/RAGdata:/data/mcpdata:ro
+      - /absolute/path/to/your/rag-data:/data/mcpdata:ro
       - ./app:/app
       - index_state:/app/state
 

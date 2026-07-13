@@ -27,7 +27,7 @@ services:
       MCP_HOST: "0.0.0.0"
       MCP_PORT: "6646"
     volumes:
-      - ${KB_SOURCE_DIR:-/vol3/1000/RAGdata}:/data/mcpdata:ro
+      - ${KB_SOURCE_DIR:-/absolute/path/to/your/rag-data}:/data/mcpdata:ro
       - ./storage/index_state:/app/state
 
   ragcheck:
@@ -45,4 +45,3 @@ services:
       QDRANT_URL: http://qdrant:6333
     volumes:
       - ./storage/reports:/app/reports
-

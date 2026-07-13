@@ -84,7 +84,7 @@ RAG on docker/
 2. Edit `RAGcheck/.env`
 3. Create a root `.env` from `.env.example` if you want to override `KB_SOURCE_DIR`
 
-The root `KB_SOURCE_DIR` controls where your NAS knowledge files are mounted into the `knowledge-mcp` container.
+The root `KB_SOURCE_DIR` controls where your NAS or host knowledge files are mounted into the `knowledge-mcp` container.
 
 ## How to fill `.env`
 
@@ -103,7 +103,7 @@ If your environment does not use `cp`, create the three `.env` files manually an
 The root `.env` is only used to define where your knowledge files live on the host machine.
 
 ```env
-KB_SOURCE_DIR=/vol3/1000/RAGdata
+KB_SOURCE_DIR=/absolute/path/to/your/rag-data
 ```
 
 - `KB_SOURCE_DIR`: absolute path of your RAG knowledge directory on the NAS or host
@@ -133,12 +133,12 @@ This file is used by the health-check and email report service.
 MCP_CHECK_URL=http://knowledge-mcp:6646
 QDRANT_URL=http://qdrant:6333
 
-SMTP_HOST=smtp.126.com
-SMTP_PORT=465
-SMTP_USER=your_mail_account
+SMTP_HOST=your_smtp_host
+SMTP_PORT=your_smtp_port
+SMTP_USER=your_smtp_username
 SMTP_PASS=your_smtp_password_or_auth_code
-MAIL_FROM=your_mail_account@126.com
-MAIL_TO=receiver@example.com
+MAIL_FROM=your_sender_email
+MAIL_TO=your_receiver_email
 
 CHECK_INTERVAL_DAYS=3
 REPORT_RETENTION_DAYS=30
@@ -146,14 +146,20 @@ REPORT_RETENTION_DAYS=30
 
 - `MCP_CHECK_URL`: MCP service address inside Docker Compose, usually keep `http://knowledge-mcp:6646`
 - `QDRANT_URL`: Qdrant service address inside Docker Compose, usually keep `http://qdrant:6333`
-- `SMTP_HOST`: SMTP server address of your mailbox provider
-- `SMTP_PORT`: SMTP port, commonly `465` for SSL or `587` for STARTTLS
-- `SMTP_USER`: sender mailbox login account
+- `SMTP_HOST`: SMTP server address from your email provider's official settings page
+- `SMTP_PORT`: SMTP port from your provider's official settings page; common values are `465` for SSL and `587` for STARTTLS, but do not assume these without checking
+- `SMTP_USER`: SMTP login username; some providers use the full email address, others use an account name
 - `SMTP_PASS`: mailbox password or SMTP authorization code, depending on your provider
 - `MAIL_FROM`: sender email address
 - `MAIL_TO`: receiver email address for the health reports
 - `CHECK_INTERVAL_DAYS`: how many days between automatic checks
 - `REPORT_RETENTION_DAYS`: how many days local HTML reports are kept
+
+Important:
+
+- Do not copy SMTP host, port, or username values from unrelated examples on the internet
+- Use the exact SMTP host, port, encryption mode, and credential format required by your own provider
+- If your provider requires an app password or SMTP authorization code, use that instead of your normal login password
 
 ### Publishing reminder
 

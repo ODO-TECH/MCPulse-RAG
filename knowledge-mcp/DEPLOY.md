@@ -73,7 +73,7 @@ SILICONFLOW_API_KEY=你的API密钥
 
 ```yaml
 volumes:
-  - /vol3/1000/RAGdata:/data/mcpdata:ro   # 改为你的知识库目录
+  - /absolute/path/to/your/rag-data:/data/mcpdata:ro   # 改为你的知识库目录
 ```
 
 ### 5. 启动服务
@@ -112,7 +112,7 @@ http://<NAS-IP>:6646/sse
 {
   "mcpServers": {
     "knowledge-base": {
-      "url": "http://192.168.1.100:6646/sse"
+      "url": "http://<your-nas-ip>:6646/sse"
     }
   }
 }

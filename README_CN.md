@@ -91,7 +91,7 @@ cp RAGcheck/.env.example RAGcheck/.env
 顶层 `.env` 只负责指定知识库目录挂载路径。
 
 ```env
-KB_SOURCE_DIR=/vol3/1000/RAGdata
+KB_SOURCE_DIR=/absolute/path/to/your/rag-data
 ```
 
 - `KB_SOURCE_DIR`：你的知识库在 NAS 或宿主机上的绝对路径
@@ -121,12 +121,12 @@ RERANK_MODEL=Qwen/Qwen3-Reranker-8B
 MCP_CHECK_URL=http://knowledge-mcp:6646
 QDRANT_URL=http://qdrant:6333
 
-SMTP_HOST=smtp.126.com
-SMTP_PORT=465
-SMTP_USER=your_mail_account
+SMTP_HOST=your_smtp_host
+SMTP_PORT=your_smtp_port
+SMTP_USER=your_smtp_username
 SMTP_PASS=your_smtp_password_or_auth_code
-MAIL_FROM=your_mail_account@126.com
-MAIL_TO=receiver@example.com
+MAIL_FROM=your_sender_email
+MAIL_TO=your_receiver_email
 
 CHECK_INTERVAL_DAYS=3
 REPORT_RETENTION_DAYS=30
@@ -134,14 +134,20 @@ REPORT_RETENTION_DAYS=30
 
 - `MCP_CHECK_URL`：Docker Compose 内部的 MCP 服务地址，通常保持 `http://knowledge-mcp:6646`
 - `QDRANT_URL`：Docker Compose 内部的 Qdrant 地址，通常保持 `http://qdrant:6333`
-- `SMTP_HOST`：邮箱服务商的 SMTP 服务器地址
-- `SMTP_PORT`：SMTP 端口，常见为 `465` 或 `587`
-- `SMTP_USER`：发件邮箱登录账号
+- `SMTP_HOST`：以你的邮箱服务商官方文档为准填写 SMTP 服务器地址
+- `SMTP_PORT`：以你的邮箱服务商官方文档为准填写端口；常见有 `465` 和 `587`，但不要在未确认前直接套用
+- `SMTP_USER`：SMTP 登录账号。有些服务商要求填写完整邮箱地址，有些要求填写独立账号名
 - `SMTP_PASS`：邮箱密码或 SMTP 授权码，取决于你的邮箱服务商
 - `MAIL_FROM`：发件人邮箱
 - `MAIL_TO`：用于接收巡检报告的邮箱
 - `CHECK_INTERVAL_DAYS`：自动巡检间隔天数
 - `REPORT_RETENTION_DAYS`：本地 HTML 报告保留天数
+
+重要说明：
+
+- 不要直接照搬别人的 SMTP 主机名、端口或用户名格式
+- 必须以你自己的邮箱服务商文档为准填写 SMTP 地址、端口、加密方式和认证格式
+- 如果你的服务商要求使用客户端专用密码或 SMTP 授权码，请不要直接使用网页登录密码
 
 ## 启动方式
 
@@ -160,4 +166,3 @@ docker compose up -d --build
 - 不要上传 `RAGcheck/.env`
 - 不要上传 `storage/`
 - 保留 `.env.example` 作为公开示例配置
-
