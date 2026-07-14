@@ -46,17 +46,17 @@
 
 ```
 mcpdata/
-├── progress/          ← 入党入团等进步材料
-│   ├── dang/
-│   └── tuan/
-├── wangshi/           ← 东方妄世谭相关
-│   ├── typemoon/
-│   ├── integrate/
-│   ├── script/
-│   └── set/
-├── study/             ← 学习相关
-│   └── english/
-└── sci/               ← 科研相关
+├── category_01/       ← 自定义知识分类 01
+│   ├── topic_a/
+│   └── topic_b/
+├── category_02/       ← 自定义知识分类 02
+│   ├── topic_a/
+│   ├── topic_b/
+│   ├── topic_c/
+│   └── topic_d/
+├── category_03/       ← 自定义知识分类 03
+│   └── topic_a/
+└── category_04/       ← 自定义知识分类 04
 ```
 
 ### 3. 填写 API Key
@@ -122,10 +122,10 @@ http://<NAS-IP>:6646/sse
 
 | 工具 | 说明 |
 |------|------|
-| `search_progress` | 在 progress 知识库中搜索（入党入团等） |
-| `search_wangshi` | 在 wangshi 知识库中搜索（妄世谭相关） |
-| `search_study` | 在 study 知识库中搜索（学习相关） |
-| `search_sci` | 在 sci 知识库中搜索（科研相关） |
+| `search_knowledge_01` | 在 knowledge_01 知识库中搜索 |
+| `search_knowledge_02` | 在 knowledge_02 知识库中搜索 |
+| `search_knowledge_03` | 在 knowledge_03 知识库中搜索 |
+| `search_knowledge_04` | 在 knowledge_04 知识库中搜索 |
 | `search_all` | 跨所有知识库搜索 |
 | `list_topics` | 列出主题目录层级 |
 | `get_doc_info` | 查看文件详细信息 |
@@ -135,7 +135,7 @@ http://<NAS-IP>:6646/sse
 ### search_xxx 参数
 
 - `query`（必填）: 搜索查询
-- `dir_filter`（可选）: 目录路径前缀过滤，如 `progress/dang` 只搜索该子目录
+- `dir_filter`（可选）: 目录路径前缀过滤，如 `category_01/topic_a` 只搜索该子目录
 
 ### search_all 参数
 

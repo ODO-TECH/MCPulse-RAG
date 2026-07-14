@@ -15,25 +15,25 @@ knowledge:
   root: ${KB_DATA_DIR}
 
   bases:
-    - name: progress
-      path: progress
-      collection: kb_progress
-      description: 进步相关材料，包括入党、入团等内容
+    - name: knowledge_01
+      path: category_01
+      collection: kb_category_01
+      description: General-purpose knowledge category 01
 
-    - name: wangshi
-      path: wangshi
-      collection: kb_wangshi
-      description: 东方妄世谭相关材料，包括剧本、设定、整合讨论、型月相关等
+    - name: knowledge_02
+      path: category_02
+      collection: kb_category_02
+      description: General-purpose knowledge category 02
 
-    - name: study
-      path: study
-      collection: kb_study
-      description: 学习相关材料
+    - name: knowledge_03
+      path: category_03
+      collection: kb_category_03
+      description: General-purpose knowledge category 03
 
-    - name: sci
-      path: sci
-      collection: kb_sci
-      description: 科研相关材料
+    - name: knowledge_04
+      path: category_04
+      collection: kb_category_04
+      description: General-purpose knowledge category 04
 
 retrieval:
   similarity_top_k: 12
