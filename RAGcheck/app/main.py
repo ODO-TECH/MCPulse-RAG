@@ -5,7 +5,7 @@ import time
 import schedule
 
 from healthcheck import run_all_checks
-from mailer import send_report
+from notifier import send_report
 from report import cleanup_old_reports, render_html, render_markdown, render_text, save_report
 
 logging.basicConfig(

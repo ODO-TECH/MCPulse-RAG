@@ -36,7 +36,7 @@ After that, it continues watching for file changes and updates the index automat
 
 The service also exposes MCP tools over Streamable HTTP, so an MCP client can search the knowledge base, inspect indexed content, and trigger reindex or incremental ingest operations.
 
-Alongside it, `ragcheck` runs periodic health checks against both the MCP endpoint and Qdrant, writes HTML reports, and sends those results to the configured mailbox.
+Alongside it, `ragcheck` runs periodic health checks against both the MCP endpoint and Qdrant, writes HTML reports, and sends those results to the configured QQ bot endpoint.
 
 ## Main components
 
@@ -127,18 +127,20 @@ RERANK_MODEL=rerank-1
 
 ### `RAGcheck/.env`
 
-This file is used by the health-check and report service.
+This file is used by the health-check and QQ bot report service in the `ragcheck-qqbot` branch.
 
 ```env
 MCP_CHECK_URL=http://knowledge-mcp:6646
 QDRANT_URL=http://qdrant:6333
+REQUIRED_MCP_TOOLS=search_knowledge_01,search_knowledge_02,search_knowledge_03,search_knowledge_04,search_all,list_topics,get_doc_info,reindex,ingest_knowledge,kb_stats
+MCP_PROTOCOL_VERSION=2025-03-26
 
-SMTP_HOST=your_smtp_host
-SMTP_PORT=your_smtp_port
-SMTP_USER=your_smtp_username
-SMTP_PASS=your_smtp_password_or_auth_code
-MAIL_FROM=your_sender_email
-MAIL_TO=your_receiver_email
+NOTIFY_MODE=qqbot
+QQ_BOT_WEBHOOK=https://your-qq-bot-endpoint.example.com/report
+QQ_BOT_TOKEN=
+QQ_BOT_TARGET=
+QQ_BOT_TARGET_TYPE=private
+QQ_BOT_TIMEOUT=20
 
 CHECK_INTERVAL_DAYS=3
 REPORT_RETENTION_DAYS=30
@@ -146,20 +148,15 @@ REPORT_RETENTION_DAYS=30
 
 - `MCP_CHECK_URL`: MCP service address inside Docker Compose, usually keep `http://knowledge-mcp:6646`
 - `QDRANT_URL`: Qdrant service address inside Docker Compose, usually keep `http://qdrant:6333`
-- `SMTP_HOST`: SMTP server address from your email provider's official settings page
-- `SMTP_PORT`: SMTP port from your provider's official settings page; common values are `465` for SSL and `587` for STARTTLS, but do not assume these without checking
-- `SMTP_USER`: SMTP login username; some providers use the full email address, others use an account name
-- `SMTP_PASS`: mailbox password or SMTP authorization code, depending on your provider
-- `MAIL_FROM`: sender email address
-- `MAIL_TO`: receiver email address for the health reports
+- `REQUIRED_MCP_TOOLS`: expected MCP tools used by the checker
+- `MCP_PROTOCOL_VERSION`: MCP protocol version used during Streamable HTTP checks
+- `QQ_BOT_WEBHOOK`: your QQ bot report endpoint
+- `QQ_BOT_TOKEN`: optional bearer token
+- `QQ_BOT_TARGET`: optional target id
+- `QQ_BOT_TARGET_TYPE`: delivery target type such as `private`
+- `QQ_BOT_TIMEOUT`: request timeout in seconds
 - `CHECK_INTERVAL_DAYS`: how many days between automatic checks
 - `REPORT_RETENTION_DAYS`: how many days local HTML reports are kept
-
-Important:
-
-- Do not copy SMTP host, port, or username values from unrelated examples on the internet
-- Use the exact SMTP host, port, encryption mode, and credential format required by your own provider
-- If your provider requires an app password or SMTP authorization code, use that instead of your normal login password
 
 ### Publishing reminder
 
@@ -184,7 +181,7 @@ docker compose up -d --build
 ## Delivery variants
 
 - `main`: email delivery variant for public deployments
-- `ragcheck-qqbot`: QQ bot delivery branch prepared from the same health-check logic
+- `ragcheck-qqbot`: this branch, using QQ bot delivery by default
 
 ## Notes for publishing
 

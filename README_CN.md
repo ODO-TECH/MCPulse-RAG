@@ -41,7 +41,7 @@
 
 之后，服务会继续监听文件变化。新增、修改或删除文件时，会自动触发增量索引更新。
 
-与此同时，`ragcheck` 会按设定周期访问 MCP 服务和 Qdrant，检查接口可用性、collection 状态和工具可调用性，并把结果保存成 HTML 报告，同时通过你配置的推送方式发送出去。
+与此同时，`ragcheck` 会按设定周期访问 MCP 服务和 Qdrant，检查接口可用性、collection 状态和工具可调用性，并把结果保存成 HTML 报告，同时通过你配置的 QQ bot 接口发送出去。
 
 ## 目录结构
 
@@ -59,11 +59,6 @@ RAG on docker/
 |  |- .env.example
 |  |- Dockerfile
 |  `- app/
-|- RAGcheck-qqbot/
-|  |- .env
-|  |- .env.example
-|  |- Dockerfile
-|  `- app/
 `- storage/
    |- qdrant/
    |- index_state/
@@ -73,7 +68,7 @@ RAG on docker/
 ## 首次使用前要做什么
 
 1. 填写 `knowledge-mcp/.env`
-2. 选择并填写 `RAGcheck/.env` 或 `RAGcheck-qqbot/.env`
+2. 填写 `RAGcheck/.env`
 3. 如果你想覆盖知识库挂载路径，再根据 `.env.example` 创建顶层 `.env`
 
 顶层 `KB_SOURCE_DIR` 用来指定宿主机或 NAS 上的知识库目录，它会以只读方式挂载到容器内的 `/data/mcpdata`。
@@ -86,12 +81,6 @@ RAG on docker/
 cp .env.example .env
 cp knowledge-mcp/.env.example knowledge-mcp/.env
 cp RAGcheck/.env.example RAGcheck/.env
-```
-
-如果你使用 QQ bot 推送，则把最后一条替换为：
-
-```bash
-cp RAGcheck-qqbot/.env.example RAGcheck-qqbot/.env
 ```
 
 ### 顶层 `.env`
@@ -123,28 +112,7 @@ RERANK_MODEL=rerank-1
 
 ### `RAGcheck/.env`
 
-这个文件负责邮箱推送版本的巡检服务。
-
-```env
-MCP_CHECK_URL=http://knowledge-mcp:6646
-QDRANT_URL=http://qdrant:6333
-REQUIRED_MCP_TOOLS=search_knowledge_01,search_knowledge_02,search_knowledge_03,search_knowledge_04,search_all,list_topics,get_doc_info,reindex,ingest_knowledge,kb_stats
-MCP_PROTOCOL_VERSION=2025-03-26
-
-SMTP_HOST=your_smtp_host
-SMTP_PORT=your_smtp_port
-SMTP_USER=your_smtp_username
-SMTP_PASS=your_smtp_password_or_auth_code
-MAIL_FROM=your_sender_email
-MAIL_TO=your_receiver_email
-
-CHECK_INTERVAL_DAYS=3
-REPORT_RETENTION_DAYS=30
-```
-
-### `RAGcheck-qqbot/.env`
-
-这个文件负责 QQ bot 推送版本的巡检服务。
+这个文件负责 `ragcheck-qqbot` 分支里的 QQ bot 推送巡检服务。
 
 ```env
 MCP_CHECK_URL=http://knowledge-mcp:6646
@@ -177,12 +145,11 @@ docker compose up -d --build
 ## 报告推送变体
 
 - `main`：面向公开部署的邮箱推送版本
-- `ragcheck-qqbot`：基于同一套巡检逻辑整理出的 QQ bot 推送分支
+- `ragcheck-qqbot`：当前分支，默认使用 QQ bot 推送
 
 ## 发布前提醒
 
 - 不要上传 `knowledge-mcp/.env`
 - 不要上传 `RAGcheck/.env`
-- 不要上传 `RAGcheck-qqbot/.env`
 - 不要上传 `storage/`
 - 保留 `.env.example` 作为公开示例配置
