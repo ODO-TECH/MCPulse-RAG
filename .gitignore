@@ -1,0 +1,20 @@
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Local secrets
+knowledge-mcp/.env
+RAGcheck/.env
+RAGcheck-qqbot/.env
+
+# Runtime data
+storage/
+knowledge-mcp/qdrant_data/
+RAGcheck/reports/
+RAGcheck-qqbot/reports/
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
