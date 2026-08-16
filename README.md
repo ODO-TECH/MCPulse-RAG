@@ -3,7 +3,7 @@
 `RAG on Docker` is a self-hosted RAG service bundle designed for NAS or Docker-based deployments.
 It combines document indexing, MCP exposure, vector storage, scheduled health checks, and report delivery into one manageable stack.
 
-- Current version: `0.2.0`
+- Current version: `0.2.1`
 - Chinese documentation: [README_CN.md](README_CN.md)
 - Changelog: [CHANGELOG.md](CHANGELOG.md)
 - License: [MIT](LICENSE)

@@ -1,8 +1,8 @@
 # RAG on Docker
 
-`RAG on Docker` 是一套面向 NAS 或通用 Docker 环境的自托管 RAG 服务组合。它把知识库索引、MCP 暴露、向量库存储、定时巡检和报告推送整理成了一套统一的 Docker Compose 方案，方便部署、迁移和公开发布。
+`RAG on Docker` 是一套面向 NAS 和通用 Docker 环境的自托管 RAG 服务组合。它把知识库索引、MCP 暴露、向量库存储、定时巡检和报告推送整理成一套统一的 Docker Compose 方案，方便部署、迁移和公开发布。
 
-- 当前版本：`0.2.0`
+- 当前版本：`0.2.1`
 - 英文说明：[README.md](README.md)
 - 更新记录：[CHANGELOG.md](CHANGELOG.md)
 - 开源协议：[MIT](LICENSE)
@@ -41,7 +41,7 @@
 
 之后，服务会继续监听文件变化。新增、修改或删除文件时，会自动触发增量索引更新。
 
-与此同时，`ragcheck` 会按设定周期访问 MCP 服务和 Qdrant，检查接口可用性、collection 状态和工具可调用性，并把结果保存成 HTML 报告，同时通过你配置的 QQ bot 接口发送出去。
+与此同时，`ragcheck` 会按设定周期访问 MCP 服务和 Qdrant，检查接口可用性、collection 状态和工具可调用性，并把结果保存成 HTML 报告，再通过当前分支默认的 QQ bot 推送方式发送出去。
 
 ## 目录结构
 
@@ -112,7 +112,7 @@ RERANK_MODEL=rerank-1
 
 ### `RAGcheck/.env`
 
-这个文件负责 `ragcheck-qqbot` 分支里的 QQ bot 推送巡检服务。
+这个文件负责当前 `ragcheck-qqbot` 分支中的 QQ bot 推送巡检服务。
 
 ```env
 MCP_CHECK_URL=http://knowledge-mcp:6646
@@ -130,6 +130,16 @@ QQ_BOT_TIMEOUT=20
 CHECK_INTERVAL_DAYS=3
 REPORT_RETENTION_DAYS=30
 ```
+
+- `MCP_CHECK_URL`：Docker Compose 内部的 MCP 服务地址
+- `QDRANT_URL`：Docker Compose 内部的 Qdrant 地址
+- `REQUIRED_MCP_TOOLS`：巡检时要求存在的工具名
+- `MCP_PROTOCOL_VERSION`：MCP Streamable HTTP 握手时使用的协议版本
+- `QQ_BOT_WEBHOOK`：你的 QQ bot 报告接口
+- `QQ_BOT_TOKEN`：可选的 bearer token
+- `QQ_BOT_TARGET`：可选的目标 id
+- `QQ_BOT_TARGET_TYPE`：目标类型，例如 `private`
+- `QQ_BOT_TIMEOUT`：请求超时时间，单位秒
 
 ## 启动方式
 
