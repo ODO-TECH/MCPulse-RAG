@@ -1,128 +1,153 @@
-import time
 import logging
 import threading
+import time
 from pathlib import Path
-from typing import Dict, Set
-
-from watchdog.observers import Observer
-from watchdog.events import FileSystemEventHandler, FileSystemEvent
-
-from utils import load_config, ALLOWED_EXT
-from indexer import index_base
+from typing import Any, Dict
 
 from qdrant_client import QdrantClient
+from watchdog.events import FileSystemEvent, FileSystemEventHandler
+from watchdog.observers import Observer
+from watchdog.observers.polling import PollingObserver
+
+from indexer import index_base
+from utils import ALLOWED_EXT, load_config
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
 
 
 class KBEventHandler(FileSystemEventHandler):
-    def __init__(self, cfg: Dict, client: QdrantClient):
+    def __init__(self, cfg: Dict[str, Any], client: QdrantClient):
         super().__init__()
         self.cfg = cfg
         self.client = client
         self.root = Path(cfg["knowledge"]["root"]).resolve()
-        self.bases = {b["name"]: b for b in cfg["knowledge"]["bases"]}
-        self.debounce_sec = cfg.get("watcher", {}).get("debounce_seconds", 30)
+        self.bases = {base["name"]: base for base in cfg["knowledge"]["bases"]}
+        self.debounce_sec = int(cfg.get("watcher", {}).get("debounce_seconds", 30))
         self._pending: Dict[str, threading.Timer] = {}
         self._lock = threading.Lock()
 
-    def _is_target(self, path: str) -> bool:
-        p = Path(path)
-        return p.suffix.lower() in ALLOWED_EXT
+    def _is_target_file(self, path: str) -> bool:
+        return Path(path).suffix.lower() in ALLOWED_EXT
 
-    def _get_base(self, path: str) -> str | None:
+    def _resolve_base_name(self, path: str) -> str | None:
         try:
             rel = Path(path).resolve().relative_to(self.root)
-            top = rel.parts[0] if rel.parts else None
-            if top and top in self.bases:
-                return top
         except ValueError:
-            pass
+            return None
+
+        if not rel.parts:
+            return None
+
+        base_name = rel.parts[0]
+        if base_name in self.bases:
+            return base_name
         return None
 
-    def _on_change(self, event: FileSystemEvent):
-        if event.is_directory:
-            return
-        if not self._is_target(event.src_path):
+    def _queue_event(self, path: str):
+        if not self._is_target_file(path):
             return
 
-        base = self._get_base(event.src_path)
-        if not base:
+        base_name = self._resolve_base_name(path)
+        if not base_name:
             return
 
-        logger.info("检测到文件变更: %s → 知识库 %s", event.src_path, base)
-        self._schedule_reindex(base)
+        logger.info("Detected knowledge file change: %s -> base=%s", path, base_name)
+        self._schedule_reindex(base_name)
 
     def on_created(self, event: FileSystemEvent):
-        self._on_change(event)
+        if not event.is_directory:
+            self._queue_event(event.src_path)
 
     def on_modified(self, event: FileSystemEvent):
-        self._on_change(event)
+        if not event.is_directory:
+            self._queue_event(event.src_path)
 
     def on_deleted(self, event: FileSystemEvent):
-        self._on_change(event)
+        if not event.is_directory:
+            self._queue_event(event.src_path)
 
     def on_moved(self, event: FileSystemEvent):
         if event.is_directory:
             return
-        self._on_change(event)
-        if hasattr(event, "dest_path"):
-            base = self._get_base(event.dest_path)
-            if base:
-                self._schedule_reindex(base)
+
+        self._queue_event(event.src_path)
+        dest_path = getattr(event, "dest_path", "")
+        if dest_path:
+            self._queue_event(dest_path)
 
     def _schedule_reindex(self, base_name: str):
         with self._lock:
-            if base_name in self._pending:
-                self._pending[base_name].cancel()
-            timer = threading.Timer(self.debounce_sec, self._do_reindex, args=(base_name,))
+            existing = self._pending.get(base_name)
+            if existing is not None:
+                existing.cancel()
+
+            timer = threading.Timer(self.debounce_sec, self._run_incremental_index, args=(base_name,))
             timer.daemon = True
             timer.start()
             self._pending[base_name] = timer
-            logger.info("计划 %d 秒后重建索引: %s", self.debounce_sec, base_name)
 
-    def _do_reindex(self, base_name: str):
+        logger.info("Scheduled incremental indexing for base=%s in %ss", base_name, self.debounce_sec)
+
+    def _run_incremental_index(self, base_name: str):
         with self._lock:
             self._pending.pop(base_name, None)
 
         base = self.bases.get(base_name)
-        if not base:
+        if base is None:
+            logger.warning("Skipping unknown base during watcher indexing: %s", base_name)
             return
+
         try:
-            logger.info("开始重建索引: %s", base_name)
-            index_base(self.client, self.cfg, base, force=True)
-            logger.info("重建完成: %s", base_name)
-        except Exception as e:
-            logger.error("重建索引失败 %s: %s", base_name, e, exc_info=True)
+            logger.info("Starting watcher-triggered incremental indexing for base=%s", base_name)
+            index_base(self.client, self.cfg, base, force=False)
+            logger.info("Watcher-triggered indexing completed for base=%s", base_name)
+        except Exception as exc:
+            logger.error("Watcher-triggered indexing failed for base=%s: %s", base_name, exc, exc_info=True)
 
     def shutdown(self):
         with self._lock:
-            for t in self._pending.values():
-                t.cancel()
+            for timer in self._pending.values():
+                timer.cancel()
             self._pending.clear()
 
 
 def _connect_qdrant(host: str, port: int) -> QdrantClient:
     for attempt in range(10):
         try:
-            c = QdrantClient(host=host, port=port)
-            c.get_collections()
-            return c
-        except Exception as e:
-            logger.warning("等待 Qdrant... (%d/10) %s", attempt + 1, e)
+            client = QdrantClient(host=host, port=port)
+            client.get_collections()
+            return client
+        except Exception as exc:
+            logger.warning("Waiting for Qdrant... (%d/10) %s", attempt + 1, exc)
             time.sleep(3)
-    raise RuntimeError("无法连接 Qdrant")
+    raise RuntimeError("Unable to connect to Qdrant")
 
 
-def run_watcher(cfg: Dict):
+def _build_observer(cfg: Dict[str, Any]):
+    watcher_cfg = cfg.get("watcher", {})
+    observer_type = str(watcher_cfg.get("observer", "polling")).lower()
+    polling_interval = float(watcher_cfg.get("polling_interval_seconds", 5))
+
+    if observer_type == "event":
+        return Observer(), observer_type, polling_interval
+    return PollingObserver(timeout=polling_interval), observer_type, polling_interval
+
+
+def run_watcher(cfg: Dict[str, Any]):
     client = _connect_qdrant(cfg["qdrant"]["host"], int(cfg["qdrant"]["port"]))
     root = cfg["knowledge"]["root"]
     handler = KBEventHandler(cfg, client)
-    observer = Observer()
+    observer, observer_type, polling_interval = _build_observer(cfg)
+
     observer.schedule(handler, root, recursive=True)
     observer.start()
-    logger.info("文件监控已启动: %s", root)
+    logger.info(
+        "Knowledge watcher started on %s (observer=%s, interval=%ss)",
+        root,
+        observer_type,
+        polling_interval,
+    )
 
     try:
         while True:
@@ -130,9 +155,9 @@ def run_watcher(cfg: Dict):
     except KeyboardInterrupt:
         handler.shutdown()
         observer.stop()
+
     observer.join()
 
 
 if __name__ == "__main__":
-    cfg = load_config()
-    run_watcher(cfg)
+    run_watcher(load_config())

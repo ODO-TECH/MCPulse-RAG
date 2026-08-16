@@ -18,9 +18,9 @@ def load_config(config_path: str = "/app/config.yaml") -> Dict[str, Any]:
     for key, val in [
         ("QDRANT_HOST", os.getenv("QDRANT_HOST", "qdrant")),
         ("QDRANT_PORT", os.getenv("QDRANT_PORT", "6333")),
-        ("SILICONFLOW_API_BASE", os.getenv("SILICONFLOW_API_BASE", "https://api.siliconflow.cn/v1")),
-        ("EMBED_MODEL", os.getenv("EMBED_MODEL", "Qwen/Qwen3-Embedding-8B")),
-        ("RERANK_MODEL", os.getenv("RERANK_MODEL", "Qwen/Qwen3-Reranker-8B")),
+        ("MODEL_API_BASE", os.getenv("MODEL_API_BASE", "https://api.openai.com/v1")),
+        ("EMBED_MODEL", os.getenv("EMBED_MODEL", "text-embedding-3-large")),
+        ("RERANK_MODEL", os.getenv("RERANK_MODEL", "rerank-1")),
         ("KB_DATA_DIR", os.getenv("KB_DATA_DIR", "/data/mcpdata")),
     ]:
         raw = raw.replace(f"${{{key}}}", val)
@@ -121,10 +121,10 @@ def file_hash(path: Path) -> str:
 
 def get_embeddings(texts: List[str], cfg: Dict[str, Any]) -> List[List[float]]:
     api_base = cfg["models"]["api_base"]
-    api_key = get_env("SILICONFLOW_API_KEY", "")
+    api_key = get_env("MODEL_API_KEY", "")
     model = cfg["models"]["embed_model"]
     if not api_key:
-        raise ValueError("缺少环境变量 SILICONFLOW_API_KEY")
+        raise ValueError("Missing required environment variable MODEL_API_KEY")
     url = f"{api_base}/embeddings"
     headers = {
         "Authorization": f"Bearer {api_key}",
@@ -146,10 +146,10 @@ def rerank(query: str, documents: List[str], top_n: int, cfg: Dict[str, Any]) ->
     if not documents:
         return []
     api_base = cfg["models"]["api_base"]
-    api_key = get_env("SILICONFLOW_API_KEY", "")
+    api_key = get_env("MODEL_API_KEY", "")
     model = cfg["models"]["rerank_model"]
     if not api_key:
-        raise ValueError("缺少环境变量 SILICONFLOW_API_KEY")
+        raise ValueError("Missing required environment variable MODEL_API_KEY")
     url = f"{api_base}/rerank"
     headers = {
         "Authorization": f"Bearer {api_key}",

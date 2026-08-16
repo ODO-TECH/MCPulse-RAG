@@ -1,15 +1,22 @@
+import logging
 import os
 import time
-import logging
 from pathlib import Path
-from typing import List, Dict, Any
+from typing import Any, Dict, List
 
 import requests
-from mcp.server.fastmcp import FastMCP
+try:
+    from mcp.server.fastmcp import FastMCP
+except ModuleNotFoundError as exc:
+    raise ModuleNotFoundError(
+        "FastMCP is missing. Rebuild the Docker image after installing the pinned MCP SDK "
+        "from requirements.txt, then restart the container."
+    ) from exc
 from qdrant_client import QdrantClient
 from qdrant_client.http import models as qdrant_models
 
-from utils import load_config
+from indexer import index_base
+from utils import ALLOWED_EXT, load_config
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
@@ -23,10 +30,9 @@ mcp = FastMCP(
 )
 
 API_BASE = cfg["models"]["api_base"]
-API_KEY = os.getenv("SILICONFLOW_API_KEY", "")
+API_KEY = os.getenv("MODEL_API_KEY", "")
 EMBED_MODEL = cfg["models"]["embed_model"]
 RERANK_MODEL = cfg["models"]["rerank_model"]
-
 QDRANT_HOST = cfg["qdrant"]["host"]
 QDRANT_PORT = int(cfg["qdrant"]["port"])
 
@@ -34,14 +40,14 @@ QDRANT_PORT = int(cfg["qdrant"]["port"])
 def _connect_qdrant() -> QdrantClient:
     for attempt in range(10):
         try:
-            c = QdrantClient(host=QDRANT_HOST, port=QDRANT_PORT)
-            c.get_collections()
-            logger.info("Qdrant 连接成功")
-            return c
-        except Exception as e:
-            logger.warning("等待 Qdrant 就绪... (%d/10) %s", attempt + 1, e)
+            qdrant_client = QdrantClient(host=QDRANT_HOST, port=QDRANT_PORT)
+            qdrant_client.get_collections()
+            logger.info("Connected to Qdrant")
+            return qdrant_client
+        except Exception as exc:
+            logger.warning("Waiting for Qdrant... (%d/10) %s", attempt + 1, exc)
             time.sleep(3)
-    raise RuntimeError("无法连接 Qdrant")
+    raise RuntimeError("Unable to connect to Qdrant")
 
 
 client = _connect_qdrant()
@@ -51,33 +57,37 @@ def embed_query(text: str) -> List[float]:
     url = f"{API_BASE}/embeddings"
     headers = {"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"}
     payload = {"model": EMBED_MODEL, "input": [text]}
-    resp = requests.post(url, headers=headers, json=payload, timeout=60)
-    resp.raise_for_status()
-    return resp.json()["data"][0]["embedding"]
+    response = requests.post(url, headers=headers, json=payload, timeout=60)
+    response.raise_for_status()
+    return response.json()["data"][0]["embedding"]
 
 
 def do_rerank(query: str, chunks: List[Dict[str, Any]], top_n: int) -> List[Dict[str, Any]]:
     if not chunks:
         return []
+
     url = f"{API_BASE}/rerank"
     headers = {"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"}
     payload = {
         "model": RERANK_MODEL,
         "query": query,
-        "documents": [c["text"] for c in chunks],
+        "documents": [chunk["text"] for chunk in chunks],
         "top_n": top_n,
     }
-    resp = requests.post(url, headers=headers, json=payload, timeout=60)
-    resp.raise_for_status()
-    results = []
-    for item in resp.json().get("results", []):
-        idx = item["index"]
-        results.append({
-            "score": item["relevance_score"],
-            "text": chunks[idx]["text"],
-            "payload": chunks[idx]["payload"],
-        })
-    return results
+    response = requests.post(url, headers=headers, json=payload, timeout=60)
+    response.raise_for_status()
+
+    reranked: List[Dict[str, Any]] = []
+    for item in response.json().get("results", []):
+        index = item["index"]
+        reranked.append(
+            {
+                "score": item["relevance_score"],
+                "text": chunks[index]["text"],
+                "payload": chunks[index]["payload"],
+            }
+        )
+    return reranked
 
 
 def search_collection(
@@ -87,88 +97,109 @@ def search_collection(
     rerank_top_n: int,
     dir_filter: str | None = None,
 ) -> List[Dict[str, Any]]:
-    query_vec = embed_query(query)
+    query_vector = embed_query(query)
 
-    qdrant_filter = None
+    query_filter = None
     if dir_filter:
-        qdrant_filter = qdrant_models.Filter(
-            must=[qdrant_models.FieldCondition(
-                key="relative_path",
-                match=qdrant_models.MatchValue(value=dir_filter),
-            )]
+        query_filter = qdrant_models.Filter(
+            must=[
+                qdrant_models.FieldCondition(
+                    key="dir_path",
+                    match=qdrant_models.MatchValue(value=dir_filter),
+                )
+            ]
         )
 
     try:
         try:
             result = client.query_points(
                 collection_name=collection_name,
-                query=query_vec,
-                query_filter=qdrant_filter,
+                query=query_vector,
+                query_filter=query_filter,
                 limit=top_k,
                 with_payload=True,
             )
-            hits = [
-                type("Hit", (), {"payload": p.payload, "score": p.score})()
-                for p in result.points
-            ]
+            hits = [type("Hit", (), {"payload": point.payload, "score": point.score})() for point in result.points]
         except AttributeError:
             hits = client.search(
                 collection_name=collection_name,
-                query_vector=query_vec,
-                query_filter=qdrant_filter,
+                query_vector=query_vector,
+                query_filter=query_filter,
                 limit=top_k,
                 with_payload=True,
             )
-    except Exception as e:
-        logger.error("Qdrant 搜索失败 [%s]: %s", collection_name, e)
+    except Exception as exc:
+        logger.error("Qdrant search failed for collection=%s: %s", collection_name, exc)
         return []
 
-    chunks = []
-    for h in hits:
-        text = h.payload.get("text", "") if h.payload else ""
-        chunks.append({"text": text, "payload": h.payload or {}, "score": h.score})
+    chunks: List[Dict[str, Any]] = []
+    for hit in hits:
+        payload = hit.payload or {}
+        chunks.append(
+            {
+                "text": payload.get("text", ""),
+                "payload": payload,
+                "score": hit.score,
+            }
+        )
 
     if not chunks:
         return []
 
     if not chunks[0]["text"]:
         return [
-            {"score": c["score"], "text": c["payload"].get("file_name", ""), "payload": c["payload"]}
-            for c in chunks
+            {
+                "score": chunk["score"],
+                "text": chunk["payload"].get("file_name", ""),
+                "payload": chunk["payload"],
+            }
+            for chunk in chunks
         ]
 
     reranked = do_rerank(query, chunks, rerank_top_n)
     if reranked:
         return reranked
+
     return [
-        {"score": c["score"], "text": c["text"], "payload": c["payload"]}
-        for c in chunks[:rerank_top_n]
+        {
+            "score": chunk["score"],
+            "text": chunk["text"],
+            "payload": chunk["payload"],
+        }
+        for chunk in chunks[:rerank_top_n]
     ]
+
+
+def _format_results(results: List[Dict[str, Any]], include_base: bool = False) -> str:
+    if not results:
+        return "No relevant content found."
+
+    lines: List[str] = []
+    for index, item in enumerate(results, start=1):
+        payload = item.get("payload", {})
+        lines.append(f"## Result {index}")
+        if include_base:
+            lines.append(f"- Knowledge base: {item.get('base', 'unknown')}")
+        lines.append(f"- Source: {payload.get('relative_path', 'unknown')}")
+        lines.append(f"- Score: {item.get('score', 0):.4f}")
+        lines.append("Content:")
+        lines.append(item.get("text", ""))
+        lines.append("")
+    return "\n".join(lines).strip()
 
 
 def _make_search(base_name: str, collection: str, description: str):
     def search(query: str, dir_filter: str = "") -> str:
-        top_k = cfg["retrieval"]["similarity_top_k"]
-        rerank_top_n = cfg["retrieval"]["rerank_top_n"]
         results = search_collection(
-            collection, query, top_k, rerank_top_n,
-            dir_filter=dir_filter if dir_filter else None,
+            collection_name=collection,
+            query=query,
+            top_k=cfg["retrieval"]["similarity_top_k"],
+            rerank_top_n=cfg["retrieval"]["rerank_top_n"],
+            dir_filter=dir_filter or None,
         )
         if not results:
-            return f"[{base_name}] 未找到相关内容。"
-        lines = []
-        for i, item in enumerate(results, 1):
-            payload = item.get("payload", {})
-            src = payload.get("relative_path", "unknown")
-            score = item.get("score", 0)
-            text = item.get("text", "")
-            lines.append(
-                f"## 结果 {i}\n"
-                f"- 来源: {src}\n"
-                f"- 相关度: {score:.4f}\n"
-                f"内容:\n{text}\n"
-            )
-        return "\n".join(lines)
+            return f"[{base_name}] No relevant content found."
+        return _format_results(results)
 
     search.__name__ = f"search_{base_name}"
     search.__qualname__ = f"search_{base_name}"
@@ -178,147 +209,143 @@ def _make_search(base_name: str, collection: str, description: str):
 
 for base in cfg["knowledge"]["bases"]:
     tool_name = f"search_{base['name']}"
-    description = base.get("description", f"在 {base['name']} 知识库中搜索")
-    fn = _make_search(base["name"], base["collection"], description)
-    mcp.tool(name=tool_name, description=description)(fn)
-    logger.info("注册工具: %s", tool_name)
+    description = base.get("description", f"Search in the {base['name']} knowledge base")
+    mcp.tool(name=tool_name, description=description)(_make_search(base["name"], base["collection"], description))
+    logger.info("Registered MCP tool: %s", tool_name)
 
 
-@mcp.tool(description="在所有知识库中同时搜索，返回各库的最佳结果")
+@mcp.tool(description="Search all knowledge bases and return the best results across them.")
 def search_all(query: str, top_k_per_base: int = 3) -> str:
-    all_results = []
+    all_results: List[Dict[str, Any]] = []
     for base in cfg["knowledge"]["bases"]:
         results = search_collection(
-            base["collection"], query,
+            collection_name=base["collection"],
+            query=query,
             top_k=min(top_k_per_base + 5, cfg["retrieval"]["similarity_top_k"]),
             rerank_top_n=top_k_per_base,
         )
-        for r in results:
-            r["base"] = base["name"]
-            all_results.append(r)
+        for result in results:
+            result["base"] = base["name"]
+            all_results.append(result)
 
-    if not all_results:
-        return "所有知识库均未找到相关内容。"
-
-    all_results.sort(key=lambda x: x.get("score", 0), reverse=True)
-    top = all_results[:top_k_per_base * 2]
-
-    lines = []
-    for i, item in enumerate(top, 1):
-        payload = item.get("payload", {})
-        src = payload.get("relative_path", "unknown")
-        base = item.get("base", "unknown")
-        score = item.get("score", 0)
-        text = item.get("text", "")
-        lines.append(
-            f"## 结果 {i}\n"
-            f"- 知识库: {base}\n"
-            f"- 来源: {src}\n"
-            f"- 相关度: {score:.4f}\n"
-            f"内容:\n{text}\n"
-        )
-    return "\n".join(lines)
+    all_results.sort(key=lambda item: item.get("score", 0), reverse=True)
+    return _format_results(all_results[: top_k_per_base * 2], include_base=True)
 
 
-@mcp.tool(description="列出知识库中所有可用的主题目录层级")
+@mcp.tool(description="List topic directories under the knowledge root or a specific subdirectory.")
 def list_topics(parent_path: str = "") -> str:
     root = Path(cfg["knowledge"]["root"])
-    if parent_path:
-        target = root / parent_path
-    else:
-        target = root
+    target = root / parent_path if parent_path else root
 
     if not target.exists():
-        return f"路径不存在: {parent_path}"
+        return f"Path does not exist: {parent_path or '/'}"
 
-    entries = []
+    entries: List[str] = []
     for item in sorted(target.iterdir()):
         if item.is_dir() and not item.name.startswith("."):
-            rel = item.relative_to(root).as_posix()
-            file_count = len([
-                f for f in item.rglob("*")
-                if f.is_file() and f.suffix.lower() in {".md", ".txt", ".pdf", ".docx", ".doc"}
-            ])
-            entries.append(f"- {rel}/ ({file_count} 个文件)")
+            rel_path = item.relative_to(root).as_posix()
+            file_count = len(
+                [child for child in item.rglob("*") if child.is_file() and child.suffix.lower() in ALLOWED_EXT]
+            )
+            entries.append(f"- {rel_path}/ ({file_count} files)")
 
     if not entries:
-        return f"目录 {parent_path or '/'} 下无子目录"
+        return f"No subdirectories found under {parent_path or '/'}"
 
-    return f"主题目录 ({parent_path or '根目录'}):\n" + "\n".join(entries)
+    return f"Topic directories under {parent_path or '/'}:\n" + "\n".join(entries)
 
 
-@mcp.tool(description="查看指定文件的详细信息")
+@mcp.tool(description="Show details for a specific file in the knowledge directory.")
 def get_doc_info(file_path: str) -> str:
     root = Path(cfg["knowledge"]["root"])
     full_path = root / file_path
 
     if not full_path.exists():
-        return f"文件不存在: {file_path}"
+        return f"File does not exist: {file_path}"
 
     stat = full_path.stat()
-    size_kb = stat.st_size / 1024
-    ext = full_path.suffix.lower()
-    rel = full_path.relative_to(root).as_posix()
-    parts = rel.split("/")
+    rel_path = full_path.relative_to(root).as_posix()
+    parts = rel_path.split("/")
 
     return (
-        f"文件: {rel}\n"
-        f"大小: {size_kb:.1f} KB\n"
-        f"类型: {ext}\n"
-        f"层级: {' > '.join(parts[:-1])}\n"
-        f"文件名: {full_path.name}"
+        f"File: {rel_path}\n"
+        f"Size: {stat.st_size / 1024:.1f} KB\n"
+        f"Type: {full_path.suffix.lower()}\n"
+        f"Hierarchy: {' > '.join(parts[:-1]) or '/'}\n"
+        f"Name: {full_path.name}"
     )
 
 
-@mcp.tool(description="手动触发指定知识库或全部知识库的重新索引")
+@mcp.tool(
+    description=(
+        "Force a full rebuild of the vector index. "
+        "Use this only when a normal incremental scan is not enough. "
+        "If base_name is empty, rebuild all configured knowledge bases. "
+        "If base_name is provided, it must be exactly one configured base name such as knowledge_01 or knowledge_02."
+    )
+)
 def reindex(base_name: str = "") -> str:
-    from indexer import index_base
     bases = cfg["knowledge"]["bases"]
     if base_name:
-        bases = [b for b in bases if b["name"] == base_name]
+        bases = [base for base in bases if base["name"] == base_name]
         if not bases:
-            return f"未找到知识库: {base_name}"
+            return f"Unknown knowledge base: {base_name}"
 
-    results = []
+    lines = ["Reindex results:"]
     for base in bases:
         try:
             index_base(client, cfg, base, force=True)
-            results.append(f"✓ {base['name']}: 索引完成")
-        except Exception as e:
-            results.append(f"✗ {base['name']}: {e}")
+            lines.append(f"- OK {base['name']}: reindexed")
+        except Exception as exc:
+            lines.append(f"- ERROR {base['name']}: {exc}")
+    return "\n".join(lines)
 
-    return "重新索引结果:\n" + "\n".join(results)
+
+@mcp.tool(
+    description=(
+        "Preferred manual sync tool. "
+        "Safe default usage is ingest_knowledge() with no arguments. "
+        "That scans all configured knowledge bases and ingests new or changed files. "
+        "If base_name is provided, only that one knowledge base is scanned incrementally. "
+        "Do not use this tool for a full rebuild; use reindex for that."
+    )
+)
+def ingest_knowledge(base_name: str = "") -> str:
+    bases = cfg["knowledge"]["bases"]
+    if base_name:
+        bases = [base for base in bases if base["name"] == base_name]
+        if not bases:
+            return f"Unknown knowledge base: {base_name}"
+
+    lines = ["Ingest results:"]
+    for base in bases:
+        try:
+            index_base(client, cfg, base, force=False)
+            lines.append(f"- OK {base['name']}: scanned for new or changed files")
+        except Exception as exc:
+            lines.append(f"- ERROR {base['name']}: {exc}")
+    return "\n".join(lines)
 
 
-@mcp.tool(description="查看知识库统计信息")
+@mcp.tool(description="Show collection and source file statistics for all knowledge bases.")
 def kb_stats() -> str:
     lines = []
     for base in cfg["knowledge"]["bases"]:
-        name = base["name"]
-        collection = base["collection"]
         try:
-            info = client.get_collection(collection)
-            count = info.points_count
-            vectors = info.config.params.vectors.size
-            lines.append(f"- {name}: {count} 个向量, 维度 {vectors}")
+            info = client.get_collection(base["collection"])
+            lines.append(
+                f"- {base['name']}: {info.points_count} vectors, dimension {info.config.params.vectors.size}"
+            )
         except Exception:
-            lines.append(f"- {name}: collection 不存在或未索引")
+            lines.append(f"- {base['name']}: collection missing or not indexed yet")
 
     root = Path(cfg["knowledge"]["root"])
-    total_files = len([
-        f for f in root.rglob("*")
-        if f.is_file() and f.suffix.lower() in {".md", ".txt", ".pdf", ".docx", ".doc"}
-    ])
-
-    return (
-        f"知识库统计:\n"
-        f"总文件数: {total_files}\n"
-        + "\n".join(lines)
-    )
+    total_files = len([path for path in root.rglob("*") if path.is_file() and path.suffix.lower() in ALLOWED_EXT])
+    return "Knowledge base stats:\n" + f"Total files: {total_files}\n" + "\n".join(lines)
 
 
 if __name__ == "__main__":
     host = os.getenv("MCP_HOST", "0.0.0.0")
     port = int(os.getenv("MCP_PORT", "6646"))
-    logger.info("MCP 服务启动: %s:%d (SSE)", host, port)
-    mcp.run(transport="sse")
+    logger.info("MCP server starting on %s:%d (Streamable HTTP)", host, port)
+    mcp.run(transport="streamable-http")

@@ -1,103 +1,303 @@
-import os
-import time
+import asyncio
+import json
 import logging
-import requests
+import os
 from datetime import datetime
-from typing import Dict, Any, List
+from typing import Any, Dict, List
+
+import requests
 
 logger = logging.getLogger(__name__)
 
-MCP_URL = os.getenv("MCP_CHECK_URL", "http://192.168.1.100:6646")
-QDRANT_URL = os.getenv("QDRANT_URL", "http://192.168.1.100:6333")
+MCP_URL = os.getenv("MCP_CHECK_URL", "http://knowledge-mcp:6646")
+QDRANT_URL = os.getenv("QDRANT_URL", "http://qdrant:6333")
+MCP_PROTOCOL_VERSION = os.getenv("MCP_PROTOCOL_VERSION", "2025-03-26")
+DEFAULT_REQUIRED_TOOLS = ",".join(
+    [
+        "search_knowledge_01",
+        "search_knowledge_02",
+        "search_knowledge_03",
+        "search_knowledge_04",
+        "search_all",
+        "list_topics",
+        "get_doc_info",
+        "reindex",
+        "ingest_knowledge",
+        "kb_stats",
+    ]
+)
+REQUIRED_MCP_TOOLS = [
+    tool.strip()
+    for tool in os.getenv("REQUIRED_MCP_TOOLS", DEFAULT_REQUIRED_TOOLS).split(",")
+    if tool.strip()
+]
 
 
-def check_mcp_sse() -> Dict[str, Any]:
-    """检查 MCP SSE 端点是否可达"""
-    url = f"{MCP_URL}/sse"
+def _mcp_endpoint() -> str:
+    return MCP_URL.rstrip("/") if MCP_URL.rstrip("/").endswith("/mcp") else f"{MCP_URL.rstrip('/')}/mcp"
+
+
+def _post_mcp(payload: Dict[str, Any], session_id: str = "") -> requests.Response:
+    headers = {
+        "Content-Type": "application/json",
+        "Accept": "application/json, text/event-stream",
+        "MCP-Protocol-Version": MCP_PROTOCOL_VERSION,
+    }
+    if session_id:
+        headers["Mcp-Session-Id"] = session_id
+    return requests.post(_mcp_endpoint(), headers=headers, json=payload, timeout=15)
+
+
+def _extract_json(response: requests.Response) -> Dict[str, Any]:
     try:
-        resp = requests.get(url, timeout=10, stream=True)
-        ok = resp.status_code == 200
-        resp.close()
-        return {"name": "MCP SSE 端点", "ok": ok, "detail": f"HTTP {resp.status_code}"}
-    except Exception as e:
-        return {"name": "MCP SSE 端点", "ok": False, "detail": str(e)}
+        data = response.json()
+    except ValueError:
+        data = None
+
+    if data is None:
+        for line in response.text.splitlines():
+            line = line.strip()
+            if not line.startswith("data:"):
+                continue
+            payload = line.removeprefix("data:").strip()
+            if not payload or payload == "[DONE]":
+                continue
+            try:
+                parsed = json.loads(payload)
+            except ValueError:
+                continue
+            if isinstance(parsed, dict):
+                return parsed
+        return {}
+
+    if isinstance(data, list):
+        for item in data:
+            if isinstance(item, dict) and item.get("jsonrpc") == "2.0":
+                return item
+        return {}
+    if isinstance(data, dict):
+        return data
+    return {}
+
+
+async def _list_mcp_tools_with_sdk() -> List[str]:
+    from mcp import ClientSession
+    from mcp.client.streamable_http import streamablehttp_client
+
+    async with streamablehttp_client(_mcp_endpoint()) as streams:
+        read_stream, write_stream = streams[0], streams[1]
+        async with ClientSession(read_stream, write_stream) as session:
+            await session.initialize()
+            response = await session.list_tools()
+            return [tool.name for tool in response.tools]
+
+
+async def _call_mcp_tool_with_sdk(tool_name: str) -> str:
+    from mcp import ClientSession
+    from mcp.client.streamable_http import streamablehttp_client
+
+    async with streamablehttp_client(_mcp_endpoint()) as streams:
+        read_stream, write_stream = streams[0], streams[1]
+        async with ClientSession(read_stream, write_stream) as session:
+            await session.initialize()
+            response = await session.call_tool(tool_name, {})
+            return str(response)
+
+
+def _list_mcp_tools_with_http() -> Dict[str, Any]:
+    init_payload = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": {
+            "protocolVersion": MCP_PROTOCOL_VERSION,
+            "capabilities": {},
+            "clientInfo": {"name": "ragcheck", "version": "1.0.0"},
+        },
+    }
+    init_response = _post_mcp(init_payload)
+    init_ok = init_response.status_code == 200
+    init_body = _extract_json(init_response) if init_ok else {}
+    if not init_ok or "error" in init_body:
+        error_detail = init_body.get("error") if isinstance(init_body, dict) else None
+        return {
+            "ok": False,
+            "detail": f"initialize failed: HTTP {init_response.status_code}, error={error_detail}",
+            "tools": [],
+        }
+
+    session_id = init_response.headers.get("Mcp-Session-Id", "")
+
+    initialized_payload = {"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}}
+    try:
+        _post_mcp(initialized_payload, session_id=session_id)
+    except Exception:
+        logger.debug("initialized notification failed", exc_info=True)
+
+    tools_payload = {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}}
+    tools_response = _post_mcp(tools_payload, session_id=session_id)
+    tools_ok = tools_response.status_code == 200
+    tools_body = _extract_json(tools_response) if tools_ok else {}
+    if not tools_ok or "error" in tools_body:
+        error_detail = tools_body.get("error") if isinstance(tools_body, dict) else None
+        return {
+            "ok": False,
+            "detail": f"tools/list failed: HTTP {tools_response.status_code}, error={error_detail}",
+            "tools": [],
+        }
+
+    tools = tools_body.get("result", {}).get("tools", [])
+    tool_names = [tool.get("name", "") for tool in tools if isinstance(tool, dict)]
+    return {
+        "ok": True,
+        "detail": f"listed {len(tool_names)} tools",
+        "tools": tool_names,
+    }
+
+
+def _list_mcp_tools() -> Dict[str, Any]:
+    try:
+        tool_names = asyncio.run(_list_mcp_tools_with_sdk())
+        return {
+            "ok": True,
+            "detail": f"listed {len(tool_names)} tools via MCP SDK",
+            "tools": tool_names,
+        }
+    except Exception as sdk_exc:
+        sdk_error = str(sdk_exc)
+        logger.warning("MCP SDK tools/list failed, falling back to raw HTTP: %s", sdk_error)
+
+    fallback = _list_mcp_tools_with_http()
+    if fallback["ok"]:
+        fallback["detail"] = f"{fallback['detail']} via raw HTTP fallback after SDK error: {sdk_error}"
+    else:
+        fallback["detail"] = f"{fallback['detail']}; SDK error: {sdk_error}"
+    return fallback
+
+
+def _probe_mcp_tool(tool_name: str) -> Dict[str, Any]:
+    try:
+        result = asyncio.run(_call_mcp_tool_with_sdk(tool_name))
+        return {
+            "ok": True,
+            "detail": f"{tool_name} callable, response_length={len(result)}",
+        }
+    except Exception as exc:
+        return {
+            "ok": False,
+            "detail": f"{tool_name} call failed: {exc}",
+        }
 
 
 def check_qdrant() -> Dict[str, Any]:
-    """检查 Qdrant 是否可达"""
     try:
-        resp = requests.get(f"{QDRANT_URL}/collections", timeout=10)
-        ok = resp.status_code == 200
-        data = resp.json() if ok else {}
-        collections = [c["name"] for c in data.get("result", {}).get("collections", [])]
+        response = requests.get(f"{QDRANT_URL}/collections", timeout=10)
+        ok = response.status_code == 200
+        data = response.json() if ok else {}
+        collections = [collection["name"] for collection in data.get("result", {}).get("collections", [])]
         return {
-            "name": "Qdrant 数据库",
+            "name": "Qdrant database",
             "ok": ok,
-            "detail": f"HTTP {resp.status_code}, collections: {', '.join(collections) if collections else '无'}",
+            "detail": f"HTTP {response.status_code}, collections: {', '.join(collections) if collections else 'none'}",
         }
-    except Exception as e:
-        return {"name": "Qdrant 数据库", "ok": False, "detail": str(e)}
+    except Exception as exc:
+        return {"name": "Qdrant database", "ok": False, "detail": str(exc)}
 
 
 def check_qdrant_collections() -> List[Dict[str, Any]]:
-    """检查各 collection 的向量数量"""
-    results = []
+    results: List[Dict[str, Any]] = []
     try:
-        resp = requests.get(f"{QDRANT_URL}/collections", timeout=10)
-        if resp.status_code != 200:
+        response = requests.get(f"{QDRANT_URL}/collections", timeout=10)
+        if response.status_code != 200:
             return results
-        collections = resp.json().get("result", {}).get("collections", [])
-        for col in collections:
-            name = col["name"]
+
+        collections = response.json().get("result", {}).get("collections", [])
+        for collection in collections:
+            name = collection["name"]
             try:
-                detail_resp = requests.get(f"{QDRANT_URL}/collections/{name}", timeout=10)
-                if detail_resp.status_code == 200:
-                    info = detail_resp.json().get("result", {})
-                    points = info.get("points_count", 0)
-                    vectors = info.get("indexed_vectors_count", 0)
-                    size = info.get("config", {}).get("params", {}).get("vectors", {}).get("size", 0)
-                    results.append({
+                detail_response = requests.get(f"{QDRANT_URL}/collections/{name}", timeout=10)
+                if detail_response.status_code != 200:
+                    results.append(
+                        {"name": f"Collection: {name}", "ok": False, "detail": f"HTTP {detail_response.status_code}"}
+                    )
+                    continue
+
+                info = detail_response.json().get("result", {})
+                results.append(
+                    {
                         "name": f"Collection: {name}",
                         "ok": True,
-                        "detail": f"文档块数: {points}, 向量维度: {size}",
-                    })
-                else:
-                    results.append({"name": f"Collection: {name}", "ok": False, "detail": f"HTTP {detail_resp.status_code}"})
-            except Exception as e:
-                results.append({"name": f"Collection: {name}", "ok": False, "detail": str(e)})
+                        "detail": (
+                            f"points: {info.get('points_count', 0)}, "
+                            f"indexed_vectors: {info.get('indexed_vectors_count', 0)}, "
+                            f"dimension: {info.get('config', {}).get('params', {}).get('vectors', {}).get('size', 0)}"
+                        ),
+                    }
+                )
+            except Exception as exc:
+                results.append({"name": f"Collection: {name}", "ok": False, "detail": str(exc)})
     except Exception:
-        pass
+        logger.debug("Unable to enumerate Qdrant collections", exc_info=True)
     return results
 
 
 def check_mcp_tools() -> Dict[str, Any]:
-    """检查 MCP 服务是否可达"""
     try:
-        resp = requests.get(f"{MCP_URL}/sse", timeout=10, stream=True)
-        ok = resp.status_code == 200
-        resp.close()
-        return {"name": "MCP 服务状态", "ok": ok, "detail": f"HTTP {resp.status_code}"}
-    except Exception as e:
-        return {"name": "MCP 服务状态", "ok": False, "detail": str(e)}
+        result = _list_mcp_tools()
+        if not result["ok"]:
+            probe = _probe_mcp_tool("kb_stats")
+            if probe["ok"]:
+                return {
+                    "name": "MCP tools",
+                    "ok": True,
+                    "detail": f"{probe['detail']}; tools/list diagnostic: {result['detail']}",
+                }
+            return {"name": "MCP tools", "ok": False, "detail": f"{result['detail']}; {probe['detail']}"}
+
+        available_tools = set(result["tools"])
+        if not available_tools:
+            probe = _probe_mcp_tool("kb_stats")
+            if probe["ok"]:
+                return {
+                    "name": "MCP tools",
+                    "ok": True,
+                    "detail": f"{probe['detail']}; tools/list returned no names ({result['detail']})",
+                }
+            return {
+                "name": "MCP tools",
+                "ok": False,
+                "detail": f"tools/list returned no names ({result['detail']}); {probe['detail']}",
+            }
+
+        missing_tools = [tool for tool in REQUIRED_MCP_TOOLS if tool not in available_tools]
+        ok = not missing_tools
+        detail_parts = [
+            result["detail"],
+            f"available={', '.join(sorted(available_tools)) if available_tools else 'none'}",
+            f"required={', '.join(REQUIRED_MCP_TOOLS) if REQUIRED_MCP_TOOLS else 'none'}",
+        ]
+        if missing_tools:
+            detail_parts.append(f"missing={', '.join(missing_tools)}")
+        return {"name": "MCP tools", "ok": ok, "detail": "; ".join(detail_parts)}
+    except Exception as exc:
+        return {"name": "MCP tools", "ok": False, "detail": str(exc)}
 
 
 def run_all_checks() -> Dict[str, Any]:
-    """执行全部检查，返回报告数据"""
     now = datetime.now()
-    results = []
+    results: List[Dict[str, Any]] = []
 
-    results.append(check_mcp_sse())
     results.append(check_qdrant())
     results.extend(check_qdrant_collections())
     results.append(check_mcp_tools())
 
-    all_ok = all(r["ok"] for r in results)
-    passed = sum(1 for r in results if r["ok"])
+    all_ok = all(result["ok"] for result in results)
+    passed = sum(1 for result in results if result["ok"])
     total = len(results)
 
     return {
         "timestamp": now.strftime("%Y-%m-%d %H:%M:%S"),
-        "overall": "正常" if all_ok else "异常",
+        "overall": "OK" if all_ok else "FAIL",
         "all_ok": all_ok,
         "passed": passed,
         "total": total,

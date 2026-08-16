@@ -7,13 +7,14 @@ __pycache__/
 # Local secrets
 knowledge-mcp/.env
 RAGcheck/.env
+RAGcheck-qqbot/.env
 
 # Runtime data
 storage/
 knowledge-mcp/qdrant_data/
 RAGcheck/reports/
+RAGcheck-qqbot/reports/
 
 # OS/editor noise
 .DS_Store
 Thumbs.db
-

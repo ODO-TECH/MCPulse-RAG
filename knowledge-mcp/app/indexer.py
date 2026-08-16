@@ -1,16 +1,13 @@
 import json
-import time
 import logging
+import time
 from pathlib import Path
-from typing import List, Dict, Any
+from typing import Any, Dict, Iterable, List
 
 from qdrant_client import QdrantClient
 from qdrant_client.http import models as qdrant_models
 
-from utils import (
-    load_config, read_file, chunk_text, file_hash,
-    make_point_id, get_embeddings, ALLOWED_EXT,
-)
+from utils import ALLOWED_EXT, chunk_text, file_hash, get_embeddings, load_config, make_point_id, read_file
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
@@ -24,33 +21,36 @@ def get_state_path(base_name: str) -> Path:
 
 
 def load_state(base_name: str) -> Dict[str, str]:
-    p = get_state_path(base_name)
-    if p.exists():
-        return json.loads(p.read_text(encoding="utf-8"))
-    return {}
+    state_path = get_state_path(base_name)
+    if not state_path.exists():
+        return {}
+    return json.loads(state_path.read_text(encoding="utf-8"))
 
 
 def save_state(base_name: str, state: Dict[str, str]):
-    p = get_state_path(base_name)
-    p.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+    state_path = get_state_path(base_name)
+    state_path.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def ensure_collection(client: QdrantClient, name: str, vector_size: int):
-    collections = [c.name for c in client.get_collections().collections]
+    collections = [collection.name for collection in client.get_collections().collections]
     if name in collections:
         try:
             info = client.get_collection(name)
             existing_size = info.config.params.vectors.size
-            if existing_size != vector_size:
-                logger.warning(
-                    "Collection %s 向量维度不匹配（现有 %d，需要 %d），重建",
-                    name, existing_size, vector_size,
-                )
-                client.delete_collection(name)
-            else:
+            if existing_size == vector_size:
                 return
+
+            logger.warning(
+                "Collection %s vector size mismatch: existing=%d expected=%d. Recreating.",
+                name,
+                existing_size,
+                vector_size,
+            )
+            client.delete_collection(name)
         except Exception:
             return
+
     client.create_collection(
         collection_name=name,
         vectors_config=qdrant_models.VectorParams(
@@ -58,13 +58,61 @@ def ensure_collection(client: QdrantClient, name: str, vector_size: int):
             distance=qdrant_models.Distance.COSINE,
         ),
     )
-    for field in ["relative_path", "level1", "level2", "level3"]:
+    for field in ["relative_path", "dir_path", "level1", "level2", "level3"]:
         client.create_payload_index(
             collection_name=name,
             field_name=field,
             field_schema=qdrant_models.KeywordIndexParams(type="keyword", on_disk=True),
         )
-    logger.info("创建 collection: %s, vector_size=%d", name, vector_size)
+    logger.info("Created collection %s with vector_size=%d", name, vector_size)
+
+
+def _list_supported_files(base_path: Path) -> List[Path]:
+    return [path for path in base_path.rglob("*") if path.is_file() and path.suffix.lower() in ALLOWED_EXT]
+
+
+def _delete_file_points(client: QdrantClient, collection: str, rel_path: str):
+    client.delete(
+        collection_name=collection,
+        points_selector=qdrant_models.FilterSelector(
+            filter=qdrant_models.Filter(
+                must=[
+                    qdrant_models.FieldCondition(
+                        key="relative_path",
+                        match=qdrant_models.MatchValue(value=rel_path),
+                    )
+                ]
+            )
+        ),
+    )
+
+
+def _build_chunk_records(root: Path, file_path: Path, chunk_size: int, chunk_overlap: int) -> List[Dict[str, Any]]:
+    text = read_file(file_path)
+    if not text.strip():
+        return []
+
+    rel_path = file_path.relative_to(root).as_posix()
+    dir_path = file_path.parent.relative_to(root).as_posix()
+    parts = rel_path.split("/")
+    metadata = {
+        "file_name": file_path.name,
+        "relative_path": rel_path,
+        "dir_path": dir_path,
+        "level1": parts[0] if len(parts) > 0 else "",
+        "level2": parts[1] if len(parts) > 1 else "",
+        "level3": parts[2] if len(parts) > 2 else "",
+    }
+
+    return [
+        {
+            "text": chunk,
+            "metadata": metadata,
+            "rel_path": rel_path,
+            "chunk_index": chunk_index,
+        }
+        for chunk_index, chunk in enumerate(chunk_text(text, chunk_size, chunk_overlap))
+    ]
 
 
 def index_base(client: QdrantClient, cfg: Dict[str, Any], base: Dict[str, str], force: bool = False):
@@ -74,161 +122,147 @@ def index_base(client: QdrantClient, cfg: Dict[str, Any], base: Dict[str, str], 
     base_name = base["name"]
 
     if not base_path.exists():
-        logger.warning("目录不存在: %s，跳过 %s", base_path, base_name)
+        logger.warning("Knowledge base path does not exist, skipping %s: %s", base_name, base_path)
         return
 
-    chunk_size = cfg["retrieval"]["chunk_size"]
-    chunk_overlap = cfg["retrieval"]["chunk_overlap"]
+    collections = [collection_info.name for collection_info in client.get_collections().collections]
+    if collection not in collections and not force:
+        logger.warning(
+            "Collection %s is missing while state may exist; rebuilding base=%s",
+            collection,
+            base_name,
+        )
+        force = True
 
-    logger.info("=== 扫描知识库: %s ===", base_name)
+    logger.info("Scanning knowledge base: %s", base_name)
 
-    file_list = [
-        f for f in base_path.rglob("*")
-        if f.is_file() and f.suffix.lower() in ALLOWED_EXT
-    ]
-    logger.info("发现 %d 个文件", len(file_list))
+    file_list = _list_supported_files(base_path)
+    logger.info("Discovered %d supported files in base=%s", len(file_list), base_name)
 
+    chunk_size = int(cfg["retrieval"]["chunk_size"])
+    chunk_overlap = int(cfg["retrieval"]["chunk_overlap"])
     old_state = {} if force else load_state(base_name)
-    new_state = {}
-    file_chunks: Dict[str, List[Dict]] = {}
-    changed_files = []
+    new_state: Dict[str, str] = {}
+    changed_files: List[str] = []
+    file_chunks: Dict[str, List[Dict[str, Any]]] = {}
 
-    for fpath in file_list:
-        rel = fpath.relative_to(root).as_posix()
-        fh = file_hash(fpath)
-        new_state[rel] = fh
+    for file_path in file_list:
+        rel_path = file_path.relative_to(root).as_posix()
+        new_hash = file_hash(file_path)
+        new_state[rel_path] = new_hash
 
-        if not force and old_state.get(rel) == fh:
+        if not force and old_state.get(rel_path) == new_hash:
             continue
 
-        changed_files.append(rel)
-        text = read_file(fpath)
-        if not text.strip():
-            continue
+        changed_files.append(rel_path)
+        file_chunks[rel_path] = _build_chunk_records(root, file_path, chunk_size, chunk_overlap)
 
-        dir_path = fpath.parent.relative_to(root).as_posix()
-        parts = rel.split("/")
-        meta = {
-            "file_name": fpath.name,
-            "relative_path": rel,
-            "dir_path": dir_path,
-            "level1": parts[0] if len(parts) > 0 else "",
-            "level2": parts[1] if len(parts) > 1 else "",
-            "level3": parts[2] if len(parts) > 2 else "",
-        }
-        chunks = chunk_text(text, chunk_size, chunk_overlap)
-        file_chunks[rel] = [
-            {"text": c, "metadata": meta, "rel_path": rel, "chunk_index": ci}
-            for ci, c in enumerate(chunks)
-        ]
-
-    if force:
-        deleted_files = list(old_state.keys())
-    else:
-        deleted_files = [r for r in old_state if r not in new_state]
+    deleted_files = list(old_state.keys()) if force else [rel_path for rel_path in old_state if rel_path not in new_state]
 
     if not changed_files and not deleted_files:
-        logger.info("无变更，跳过 %s", base_name)
+        logger.info("No content changes detected for base=%s", base_name)
         return
 
-    all_chunks = []
-    for chunks in file_chunks.values():
-        all_chunks.extend(chunks)
+    if force and collection in collections:
+        client.delete_collection(collection)
+        logger.info("Deleted existing collection before full rebuild: %s", collection)
 
-    logger.info("变更文件 %d，删除文件 %d，共 %d chunk 待索引",
-                len(changed_files), len(deleted_files), len(all_chunks))
+    all_chunks: List[Dict[str, Any]] = []
+    for rel_path in changed_files:
+        all_chunks.extend(file_chunks.get(rel_path, []))
 
-    if force:
-        collections = [c.name for c in client.get_collections().collections]
-        if collection in collections:
-            client.delete_collection(collection)
-            logger.info("已删除旧 collection: %s", collection)
+    logger.info(
+        "Indexing base=%s changed_files=%d deleted_files=%d chunks=%d force=%s",
+        base_name,
+        len(changed_files),
+        len(deleted_files),
+        len(all_chunks),
+        force,
+    )
 
     if all_chunks:
         batch_size = 32
-        first_batch_texts = [c["text"] for c in all_chunks[:batch_size]]
-        first_embs = get_embeddings(first_batch_texts, cfg)
-        vector_size = len(first_embs[0])
-        ensure_collection(client, collection, vector_size)
+        first_embeddings = get_embeddings([chunk["text"] for chunk in all_chunks[:batch_size]], cfg)
+        ensure_collection(client, collection, len(first_embeddings[0]))
 
-        for rel in file_chunks:
+        for rel_path in changed_files:
             try:
-                client.delete(
-                    collection_name=collection,
-                    points_selector=qdrant_models.FilterSelector(
-                        filter=qdrant_models.Filter(
-                            must=[qdrant_models.FieldCondition(
-                                key="relative_path",
-                                match=qdrant_models.MatchValue(value=rel),
-                            )]
-                        )
-                    ),
-                )
+                _delete_file_points(client, collection, rel_path)
             except Exception:
-                pass
+                logger.warning("Failed to delete old vectors before reindexing file=%s", rel_path, exc_info=True)
 
-        for i in range(0, len(all_chunks), batch_size):
-            batch = all_chunks[i:i + batch_size]
-            texts = [c["text"] for c in batch]
-            embs = get_embeddings(texts, cfg)
-
-            points = []
-            for rc, emb in zip(batch, embs):
-                points.append(qdrant_models.PointStruct(
-                    id=make_point_id(rc["rel_path"], rc["chunk_index"]),
-                    vector=emb,
-                    payload={"text": rc["text"], **rc["metadata"]},
-                ))
-
+        for start in range(0, len(all_chunks), batch_size):
+            batch = all_chunks[start:start + batch_size]
+            embeddings = get_embeddings([chunk["text"] for chunk in batch], cfg)
+            points = [
+                qdrant_models.PointStruct(
+                    id=make_point_id(chunk["rel_path"], chunk["chunk_index"]),
+                    vector=embedding,
+                    payload={"text": chunk["text"], **chunk["metadata"]},
+                )
+                for chunk, embedding in zip(batch, embeddings)
+            ]
             client.upsert(collection_name=collection, points=points)
-            logger.info("写入进度: %d/%d", min(i + batch_size, len(all_chunks)), len(all_chunks))
+            logger.info("Upsert progress for base=%s: %d/%d", base_name, min(start + batch_size, len(all_chunks)), len(all_chunks))
 
-    if deleted_files and not force:
-        for rel in deleted_files:
-            try:
-                client.delete(
-                    collection_name=collection,
-                    points_selector=qdrant_models.FilterSelector(
-                        filter=qdrant_models.Filter(
-                            must=[qdrant_models.FieldCondition(
-                                key="relative_path",
-                                match=qdrant_models.MatchValue(value=rel),
-                            )]
-                        )
-                    ),
-                )
-            except Exception:
-                pass
-        logger.info("已删除 %d 个文件的旧向量", len(deleted_files))
+    for rel_path in deleted_files:
+        try:
+            _delete_file_points(client, collection, rel_path)
+        except Exception:
+            logger.warning("Failed to delete removed file vectors for file=%s", rel_path, exc_info=True)
 
     save_state(base_name, new_state)
-    logger.info("完成: %s，索引 %d chunk", base_name, len(all_chunks))
+    logger.info("Indexing complete for base=%s", base_name)
+
+
+def index_bases(
+    client: QdrantClient,
+    cfg: Dict[str, Any],
+    base_names: Iterable[str] | None = None,
+    force: bool = False,
+) -> List[Dict[str, str]]:
+    all_bases = {base["name"]: base for base in cfg["knowledge"]["bases"]}
+    selected_names = list(base_names) if base_names else list(all_bases.keys())
+
+    results: List[Dict[str, str]] = []
+    for base_name in selected_names:
+        base = all_bases.get(base_name)
+        if base is None:
+            results.append({"base": base_name, "status": "error", "message": "unknown knowledge base"})
+            continue
+
+        try:
+            index_base(client, cfg, base, force=force)
+            results.append({"base": base_name, "status": "ok", "message": "indexed"})
+        except Exception as exc:
+            logger.error("Indexing failed for base=%s: %s", base_name, exc, exc_info=True)
+            results.append({"base": base_name, "status": "error", "message": str(exc)})
+
+    return results
 
 
 def _connect_qdrant(host: str, port: int) -> QdrantClient:
     for attempt in range(10):
         try:
-            c = QdrantClient(host=host, port=port)
-            c.get_collections()
-            return c
-        except Exception as e:
-            logger.warning("等待 Qdrant... (%d/10) %s", attempt + 1, e)
+            client = QdrantClient(host=host, port=port)
+            client.get_collections()
+            return client
+        except Exception as exc:
+            logger.warning("Waiting for Qdrant... (%d/10) %s", attempt + 1, exc)
             time.sleep(3)
-    raise RuntimeError("无法连接 Qdrant")
+    raise RuntimeError("Unable to connect to Qdrant")
 
 
 def main(force: bool = False):
     cfg = load_config()
     client = _connect_qdrant(cfg["qdrant"]["host"], int(cfg["qdrant"]["port"]))
-    for base in cfg["knowledge"]["bases"]:
-        try:
-            index_base(client, cfg, base, force=force)
-        except Exception as e:
-            logger.error("索引 %s 失败: %s", base["name"], e, exc_info=True)
-    logger.info("全部索引完成")
+    results = index_bases(client, cfg, force=force)
+    for result in results:
+        logger.info("Base %s -> %s (%s)", result["base"], result["status"], result["message"])
+    logger.info("All indexing tasks completed")
 
 
 if __name__ == "__main__":
     import sys
-    force = "--force" in sys.argv
-    main(force=force)
+
+    main(force="--force" in sys.argv)

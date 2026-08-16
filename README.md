@@ -1,9 +1,9 @@
 # RAG on Docker
 
 `RAG on Docker` is a self-hosted RAG service bundle designed for NAS or Docker-based deployments.
-It combines document indexing, MCP exposure, vector storage, scheduled health checks, and email reporting into one manageable stack.
+It combines document indexing, MCP exposure, vector storage, scheduled health checks, and report delivery into one manageable stack.
 
-- Current version: `0.1.0`
+- Current version: `0.2.0`
 - Chinese documentation: [README_CN.md](README_CN.md)
 - Changelog: [CHANGELOG.md](CHANGELOG.md)
 - License: [MIT](LICENSE)
@@ -12,29 +12,29 @@ This project is intended for users who want to:
 
 - mount a local knowledge base directory into Docker
 - build and maintain a searchable RAG index automatically
-- expose the RAG capability through MCP over SSE
+- expose the RAG capability through MCP over Streamable HTTP
 - monitor service health on a schedule
-- receive email reports when checks run
+- receive health reports when checks run
 
 The current implementation uses:
 
 - `Qdrant` as the vector database
 - a local MCP service for search and management tools
-- SiliconFlow API endpoints for embedding and rerank model access
+- an OpenAI-compatible model API for embedding and rerank access
 - a separate scheduled checker for health reports
 
 This repository combines the whole setup into one Docker Compose stack:
 
-- `knowledge-mcp`: the RAG service that builds indexes and exposes MCP over SSE
-- `ragcheck`: the scheduled health-check and email report service
+- `knowledge-mcp`: the RAG service that builds indexes and exposes MCP over Streamable HTTP
+- `ragcheck`: the scheduled health-check and report service
 - `qdrant`: the vector database used by the RAG service
 
 ## What this project does
 
-At startup, the `knowledge-mcp` service scans the mounted knowledge directory, splits supported documents into chunks, generates embeddings through the configured model API, and stores vectors in Qdrant.
-After that, it continues watching for file changes and updates the index automatically.
+At startup, the `knowledge-mcp` service brings the MCP endpoint up immediately, starts an initial background scan, and stores vectors in Qdrant as indexing progresses.
+After that, it continues watching for file changes and updates the index automatically with incremental scans.
 
-The service also exposes MCP tools over SSE, so an MCP client can search the knowledge base, inspect indexed content, and trigger reindex operations.
+The service also exposes MCP tools over Streamable HTTP, so an MCP client can search the knowledge base, inspect indexed content, and trigger reindex or incremental ingest operations.
 
 Alongside it, `ragcheck` runs periodic health checks against both the MCP endpoint and Qdrant, writes HTML reports, and sends those results to the configured mailbox.
 
@@ -42,18 +42,18 @@ Alongside it, `ragcheck` runs periodic health checks against both the MCP endpoi
 
 - `knowledge-mcp`: indexing, retrieval, MCP tool exposure, and file watching
 - `qdrant`: vector storage and collection management
-- `ragcheck`: scheduled health checks, report generation, and email delivery
+- `ragcheck`: scheduled health checks, report generation, and report delivery
 
 ## Model API note
 
-This project is configured around the SiliconFlow-compatible API fields already used by the service:
+This project is configured around generic OpenAI-compatible API fields:
 
-- `SILICONFLOW_API_KEY`
-- `SILICONFLOW_API_BASE`
+- `MODEL_API_KEY`
+- `MODEL_API_BASE`
 - `EMBED_MODEL`
 - `RERANK_MODEL`
 
-If you continue using the same setup, fill those values in `knowledge-mcp/.env`.
+Fill those values in `knowledge-mcp/.env`.
 If you later adapt the code for another compatible provider, the deployment structure here can still stay the same.
 
 ## Directory layout
@@ -114,20 +114,20 @@ KB_SOURCE_DIR=/absolute/path/to/your/rag-data
 This file is used by the RAG service for the embedding and rerank API.
 
 ```env
-SILICONFLOW_API_KEY=your_real_api_key
-SILICONFLOW_API_BASE=https://api.siliconflow.cn/v1
-EMBED_MODEL=Qwen/Qwen3-Embedding-8B
-RERANK_MODEL=Qwen/Qwen3-Reranker-8B
+MODEL_API_KEY=your_real_api_key
+MODEL_API_BASE=https://api.openai.com/v1
+EMBED_MODEL=text-embedding-3-large
+RERANK_MODEL=rerank-1
 ```
 
-- `SILICONFLOW_API_KEY`: your real SiliconFlow API key
-- `SILICONFLOW_API_BASE`: API base URL, normally keep `https://api.siliconflow.cn/v1`
+- `MODEL_API_KEY`: your real model API key
+- `MODEL_API_BASE`: API base URL for your compatible provider
 - `EMBED_MODEL`: embedding model name used for indexing and retrieval
 - `RERANK_MODEL`: rerank model name used for result sorting
 
 ### `RAGcheck/.env`
 
-This file is used by the health-check and email report service.
+This file is used by the health-check and report service.
 
 ```env
 MCP_CHECK_URL=http://knowledge-mcp:6646
@@ -178,8 +178,13 @@ docker compose up -d --build
 
 ## Service endpoints
 
-- MCP SSE: `http://<your-host>:6646/sse`
+- MCP endpoint: `http://<your-host>:6646/mcp`
 - Qdrant API: `http://<your-host>:6333`
+
+## Delivery variants
+
+- `main`: email delivery variant for public deployments
+- `ragcheck-qqbot`: QQ bot delivery branch prepared from the same health-check logic
 
 ## Notes for publishing
 

@@ -1,8 +1,9 @@
+import logging
 import os
 import smtplib
-import logging
-from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -14,7 +15,13 @@ MAIL_FROM = os.getenv("MAIL_FROM", "")
 MAIL_TO = os.getenv("MAIL_TO", "")
 
 
-def send_report(subject: str, html_body: str) -> bool:
+def send_report(
+    subject: str,
+    text_body: str,
+    html_body: str,
+    markdown_body: Optional[str] = None,
+    report: Optional[Dict[str, Any]] = None,
+) -> bool:
     if not all([SMTP_HOST, SMTP_USER, SMTP_PASS, MAIL_FROM, MAIL_TO]) or SMTP_PORT <= 0:
         logger.warning("Email configuration is incomplete, skipping report delivery")
         return False
@@ -23,6 +30,8 @@ def send_report(subject: str, html_body: str) -> bool:
     msg["Subject"] = subject
     msg["From"] = MAIL_FROM
     msg["To"] = MAIL_TO
+
+    msg.attach(MIMEText(text_body, "plain", "utf-8"))
     msg.attach(MIMEText(html_body, "html", "utf-8"))
 
     try:
@@ -37,6 +46,6 @@ def send_report(subject: str, html_body: str) -> bool:
         server.quit()
         logger.info("Email report sent: %s", MAIL_TO)
         return True
-    except Exception as e:
-        logger.error("Email delivery failed: %s", e)
+    except Exception as exc:
+        logger.error("Email delivery failed: %s", exc)
         return False

@@ -1,11 +1,12 @@
+import logging
 import os
 import time
-import logging
+
 import schedule
 
 from healthcheck import run_all_checks
-from report import render_html, save_report, cleanup_old_reports
 from mailer import send_report
+from report import cleanup_old_reports, render_html, render_markdown, render_text, save_report
 
 logging.basicConfig(
     level=logging.INFO,
@@ -18,26 +19,28 @@ REPORT_RETENTION_DAYS = int(os.getenv("REPORT_RETENTION_DAYS", "30"))
 
 
 def do_check():
-    logger.info("开始健康检查...")
+    logger.info("Starting health checks...")
     report = run_all_checks()
     html = render_html(report)
+    markdown = render_markdown(report)
+    text = render_text(report)
+
     save_report(report, html)
     cleanup_old_reports(REPORT_RETENTION_DAYS)
 
     status = report["overall"]
-    subject = f"[知识库检查] {status} - {report['timestamp']}"
-    send_report(subject, html)
+    subject = f"[RAGcheck] {status} - {report['timestamp']}"
+    send_report(subject, text, html, markdown, report)
 
-    logger.info("检查完成: %s (%d/%d)", status, report["passed"], report["total"])
+    logger.info("Check finished: %s (%d/%d)", status, report["passed"], report["total"])
 
 
 def main():
-    logger.info("RAGcheck 启动")
-    logger.info("检查间隔: %d 天", CHECK_INTERVAL_DAYS)
-    logger.info("报告保留: %d 天", REPORT_RETENTION_DAYS)
+    logger.info("RAGcheck started")
+    logger.info("Check interval: %d day(s)", CHECK_INTERVAL_DAYS)
+    logger.info("Report retention: %d day(s)", REPORT_RETENTION_DAYS)
 
     do_check()
-
     schedule.every(CHECK_INTERVAL_DAYS).days.at("09:00").do(do_check)
 
     while True:

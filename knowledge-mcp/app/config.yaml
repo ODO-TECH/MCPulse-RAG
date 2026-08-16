@@ -7,7 +7,7 @@ qdrant:
   port: ${QDRANT_PORT}
 
 models:
-  api_base: ${SILICONFLOW_API_BASE}
+  api_base: ${MODEL_API_BASE}
   embed_model: ${EMBED_MODEL}
   rerank_model: ${RERANK_MODEL}
 
@@ -43,6 +43,8 @@ retrieval:
 
 watcher:
   debounce_seconds: 30
+  observer: polling
+  polling_interval_seconds: 5
 
 files:
   include_extensions:

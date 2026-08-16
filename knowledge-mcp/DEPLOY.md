@@ -23,16 +23,16 @@
      └─────────┘  └──────────┘  └─────────┘
 ```
 
-- **MCP Server**: 通过 SSE 协议暴露知识库检索工具，端口 6646
+- **MCP Server**: 通过 Streamable HTTP 协议暴露知识库检索工具，端口 6646
 - **Qdrant**: 向量数据库，存储嵌入向量
-- **SiliconFlow API**: 提供 Qwen3-Embedding-8B (4096维) 和 Qwen3-Reranker-8B
+- **Model API**: 提供 embedding 和 rerank 能力
 - **Watchdog**: 监听文件变更，自动触发增量索引
 - **mcpdata**: 知识库文件目录，目录层级代表主题关系
 
 ## 前置条件
 
 - Docker 和 Docker Compose
-- SiliconFlow API Key（在 https://cloud.siliconflow.cn 获取）
+- 兼容的模型 API Key
 
 ## 部署步骤
 
@@ -64,7 +64,7 @@ mcpdata/
 编辑 `.env` 文件：
 
 ```
-SILICONFLOW_API_KEY=你的API密钥
+MODEL_API_KEY=你的API密钥
 ```
 
 ### 4. 修改路径（可选）
@@ -95,7 +95,7 @@ docker compose logs -f
 curl http://localhost:6333/collections
 
 # 检查 MCP 服务
-curl http://localhost:6646/sse
+curl http://localhost:6646/mcp
 ```
 
 ## MCP 客户端配置
@@ -103,7 +103,7 @@ curl http://localhost:6646/sse
 ### 连接地址
 
 ```
-http://<NAS-IP>:6646/sse
+http://<NAS-IP>:6646/mcp
 ```
 
 ### Cherry Studio / Claude Desktop 配置示例
@@ -112,7 +112,7 @@ http://<NAS-IP>:6646/sse
 {
   "mcpServers": {
     "knowledge-base": {
-      "url": "http://<your-nas-ip>:6646/sse"
+      "url": "http://<your-nas-ip>:6646/mcp"
     }
   }
 }

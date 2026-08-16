@@ -1,13 +1,16 @@
 #!/bin/bash
 set -e
 
-echo "=== 知识库 MCP 服务启动 ==="
+echo "=== Knowledge MCP service starting ==="
 
-echo "[1/3] 首次全量索引..."
-python /app/indexer.py --force || echo "首次索引部分失败，继续启动"
+echo "[0/3] Checking MCP Python SDK..."
+python -c "from mcp.server.fastmcp import FastMCP; print('FastMCP import OK')"
 
-echo "[2/3] 启动文件监控..."
+echo "[1/3] Starting initial indexing in background..."
+python /app/indexer.py &
+
+echo "[2/3] Starting file watcher..."
 python /app/watcher.py &
 
-echo "[3/3] 启动 MCP 服务 (port ${MCP_PORT:-6646})..."
+echo "[3/3] Starting MCP service (port ${MCP_PORT:-6646})..."
 exec python /app/mcp_server.py
