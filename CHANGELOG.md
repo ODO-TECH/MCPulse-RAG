@@ -43,3 +43,10 @@ All notable changes to this project will be documented in this file.
 ### Notes
 
 - The open-source repository no longer includes personal knowledge-base naming, provider-specific defaults, or personal delivery settings
+
+## [0.2.1] - 2026-08-16
+
+### Changed
+
+- Rewrote `README_CN.md` in clean UTF-8 and aligned its wording with the current Streamable HTTP and background-indexing behavior
+- Polished release documentation for the QQ bot delivery branch so the branch-specific defaults are clear
